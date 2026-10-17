@@ -1,0 +1,111 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <time.h>
+#include <fcntl.h>
+
+#define MAX_HEALTH 100
+
+typedef struct {
+    int attacker;
+    int damage;
+    int heal;
+} Move;
+
+void player_action(int player_id, Move *move) {
+    int choice = rand() % 2; // 0 = attack, 1 = heal
+    if (choice == 0) {
+        move->attacker = player_id;
+        move->damage = (rand() % 20) + 1; // 1–20 damage
+        move->heal = 0;
+    } else {
+        move->attacker = player_id;
+        move->damage = 0;
+        move->heal = (rand() % 15) + 1; // 1–15 heal
+    }
+}
+
+void log_move(Move move) {
+    int fd = open("battle_log.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd == -1) {
+        perror("open");
+        return;
+    }
+    char buffer[100];
+    if (move.damage > 0) {
+        snprintf(buffer, sizeof(buffer), "Player %d attacks for %d damage\n",
+                 move.attacker, move.damage);
+    } else {
+        snprintf(buffer, sizeof(buffer), "Player %d heals for %d HP\n",
+                 move.attacker, move.heal);
+    }
+    write(fd, buffer, strlen(buffer));
+    close(fd);
+}
+
+int main() {
+    srand(time(NULL));
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        perror("pipe");
+        return 1;
+    }
+
+    int pid = fork();
+    if (pid == -1) {
+        perror("fork");
+        return 1;
+    }
+
+    int health1 = MAX_HEALTH;
+    int health2 = MAX_HEALTH;
+    Move move;
+
+    if (pid == 0) {
+        // Child process = Player 2
+        close(pipefd[0]); // close read end
+        while (health1 > 0 && health2 > 0) {
+            sleep(1);
+            player_action(2, &move);
+            write(pipefd[1], &move, sizeof(Move));
+        }
+        close(pipefd[1]);
+    } else {
+        // Parent process = Player 1
+        close(pipefd[1]); // close write end
+        while (health1 > 0 && health2 > 0) {
+            // Player 1's turn
+            player_action(1, &move);
+            if (move.damage > 0)
+                health2 -= move.damage;
+            else
+                health1 += move.heal;
+            if (health1 > MAX_HEALTH) health1 = MAX_HEALTH;
+            if (health2 < 0) health2 = 0;
+
+            printf("[P1] Health: %d | [P2] Health: %d\n", health1, health2);
+            log_move(move);
+            if (health2 <= 0) break;
+
+            // Player 2's turn (read from pipe)
+            read(pipefd[0], &move, sizeof(Move));
+            if (move.damage > 0)
+                health1 -= move.damage;
+            else
+                health2 += move.heal;
+            if (health1 > MAX_HEALTH) health1 = MAX_HEALTH;
+            if (health1 < 0) health1 = 0;
+
+            printf("[P1] Health: %d | [P2] Health: %d\n", health1, health2);
+            log_move(move);
+        }
+        close(pipefd[0]);
+
+        if (health1 <= 0)
+            printf("Player 2 wins!\n");
+        else
+            printf("Player 1 wins!\n");
+    }
+    return 0;
+}
